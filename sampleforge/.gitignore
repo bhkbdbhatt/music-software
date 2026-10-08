@@ -1,0 +1,47 @@
+# Local secrets. .env.example is the checked-in template.
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# Virtualenvs (uv writes .venv by default)
+.venv/
+venv/
+env/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Rendered audio and storage backends. Generated samples are reproducible from
+# their job record, so they never belong in git.
+var/
+*.wav
+*.flac
+*.mp3
+!tests/fixtures/**/*.wav
+
+# Local database and artifact files from running against SQLite.
+*.db
+*.sqlite3
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

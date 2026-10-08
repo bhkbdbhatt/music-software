@@ -1,0 +1,10 @@
+frontend/.svelte-kit/
+frontend/.vscode/
+frontend/build/
+frontend/node_modules/
+frontend/.env
+frontend/.env.example
+sampleforge/.pytest_cache/
+sampleforge/.ruff_cache
+app/__pycache__/
+tests/__pycache__/

@@ -1,0 +1,2002 @@
+{
+	"openapi": "3.1.0",
+	"info": {
+		"title": "SampleForge",
+		"description": "\nMachine-readable sample generation with **hard, verified constraints**.\n\nSubmit a `GenerationSpec` and get back a job id; poll it for rendered files and\na per-constraint pass/fail map. Every spectral and temporal constraint is\nenforced during rendering and measured afterwards, so `constraints_met` is\nevidence rather than intent.\n\n* `POST /v1/generate` \u2014 queue one job\n* `GET /v1/jobs/{job_id}` \u2014 poll it\n* `POST /v1/batch`, `GET /v1/batches/{batch_id}` \u2014 many at once\n* `/v1/recipes` \u2014 save and reuse specs\n* `GET /v1/health` \u2014 liveness (unauthenticated)\n\nAuthenticated endpoints take an `X-API-Key` header. Recipe reads are open;\neverything else requires a key.\n",
+		"version": "0.1.0"
+	},
+	"paths": {
+		"/v1/health": {
+			"get": {
+				"tags": ["health"],
+				"summary": "Service health",
+				"description": "Reports process liveness, whether the generator is loaded, whether a GPU is available, the arq queue depth, and the service version. Always 200 \u2014 degraded components are reported in the body, not as an HTTP error.",
+				"operationId": "health_v1_health_get",
+				"responses": {
+					"200": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HealthResponse"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/generate": {
+			"post": {
+				"tags": ["generation"],
+				"summary": "Queue a generation job",
+				"description": "Accepts a `GenerationSpec` and queues it for a worker. Returns 202 with a poll URL: generation is asynchronous, so no audio exists yet. Poll `GET /v1/jobs/{job_id}` for the result.\n\nEvery hard constraint in the spec is enforced during rendering and verified afterwards; a job that could not meet one finishes as `complete_with_warnings` rather than failing.",
+				"operationId": "submit_generation_v1_generate_post",
+				"parameters": [
+					{
+						"name": "X-API-Key",
+						"in": "header",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "API key identifying the caller.",
+							"auto_error": false,
+							"title": "X-Api-Key"
+						},
+						"description": "API key identifying the caller."
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/GenerationSpec"
+							}
+						}
+					}
+				},
+				"responses": {
+					"202": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/JobSubmitResponse"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Missing or invalid API key."
+					},
+					"422": {
+						"description": "The spec is invalid or violates a hard constraint."
+					},
+					"429": {
+						"description": "Rate limit exceeded.",
+						"headers": {
+							"Retry-After": {
+								"description": "Seconds to wait."
+							}
+						}
+					},
+					"503": {
+						"description": "The API is unconfigured, or the job queue is unreachable."
+					}
+				}
+			}
+		},
+		"/v1/jobs/{job_id}": {
+			"get": {
+				"tags": ["jobs"],
+				"summary": "Poll a generation job",
+				"description": "Returns the job's current status. While `queued` or `processing` the `files` list is empty. On `complete` or `complete_with_warnings` it carries every rendered variant's URL plus `constraints_met`, the per-constraint pass/fail map.",
+				"operationId": "get_job_v1_jobs__job_id__get",
+				"parameters": [
+					{
+						"name": "job_id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"title": "Job Id"
+						}
+					},
+					{
+						"name": "X-API-Key",
+						"in": "header",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "API key identifying the caller.",
+							"auto_error": false,
+							"title": "X-Api-Key"
+						},
+						"description": "API key identifying the caller."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/GenerationResponse"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Missing or invalid API key."
+					},
+					"404": {
+						"description": "No such job."
+					},
+					"422": {
+						"description": "Validation Error",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HTTPValidationError"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/jobs": {
+			"get": {
+				"tags": ["jobs"],
+				"summary": "List recent jobs",
+				"description": "Newest first, paginated, optionally filtered by status. Each item carries the echoed spec, the constraint verdict, and file URLs for finished jobs \u2014 everything a dashboard or library needs to render a job without a second request per row. `limit` is capped at 100.",
+				"operationId": "list_jobs_v1_jobs_get",
+				"parameters": [
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"maximum": 100,
+							"minimum": 1,
+							"description": "Page size.",
+							"default": 20,
+							"title": "Limit"
+						},
+						"description": "Page size."
+					},
+					{
+						"name": "offset",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Jobs to skip.",
+							"default": 0,
+							"title": "Offset"
+						},
+						"description": "Jobs to skip."
+					},
+					{
+						"name": "status",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"enum": ["queued", "processing", "complete", "complete_with_warnings", "failed"],
+									"type": "string"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "Only return jobs in this state.",
+							"title": "Status"
+						},
+						"description": "Only return jobs in this state."
+					},
+					{
+						"name": "X-API-Key",
+						"in": "header",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "API key identifying the caller.",
+							"auto_error": false,
+							"title": "X-Api-Key"
+						},
+						"description": "API key identifying the caller."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/JobList"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Missing or invalid API key."
+					},
+					"422": {
+						"description": "Validation Error",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HTTPValidationError"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/files/{job_id}/{variant}": {
+			"get": {
+				"tags": ["files"],
+				"summary": "Fetch a rendered sample",
+				"description": "Serves one variant of a finished job. Local-storage results are read from disk with the correct audio content type; remote (S3) results are answered with a 307 redirect to their object URL. Unauthenticated: browser audio elements cannot send the API key header, and the job id is a 128-bit random value.",
+				"operationId": "get_file_v1_files__job_id___variant__get",
+				"parameters": [
+					{
+						"name": "job_id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"title": "Job Id"
+						}
+					},
+					{
+						"name": "variant",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Zero-based variant index within the job's result set.",
+							"title": "Variant"
+						},
+						"description": "Zero-based variant index within the job's result set."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {}
+							}
+						}
+					},
+					"404": {
+						"description": "No such job, no such variant, or the file is gone."
+					},
+					"422": {
+						"description": "Validation Error",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HTTPValidationError"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/batch": {
+			"post": {
+				"tags": ["batch"],
+				"summary": "Queue a batch of generation jobs",
+				"description": "Queues one job per spec, all sharing a `batch_id`. Specs are validated individually, so one bad spec rejects the whole request with 422 rather than half-queueing a batch.\n\n`options.max_concurrent` and `options.on_failure` are recorded on the batch and applied by the worker as it drains the group; the API does not throttle enqueueing itself.\n\nRate limited to 10/minute per API key.",
+				"operationId": "submit_batch_v1_batch_post",
+				"parameters": [
+					{
+						"name": "X-API-Key",
+						"in": "header",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "API key identifying the caller.",
+							"auto_error": false,
+							"title": "X-Api-Key"
+						},
+						"description": "API key identifying the caller."
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/BatchRequest"
+							}
+						}
+					}
+				},
+				"responses": {
+					"202": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BatchSubmitResponse"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Missing or invalid API key."
+					},
+					"422": {
+						"description": "One or more specs are invalid."
+					},
+					"429": {
+						"description": "Rate limit exceeded."
+					},
+					"503": {
+						"description": "The API is unconfigured, or the job queue is unreachable."
+					}
+				}
+			}
+		},
+		"/v1/batches/{batch_id}": {
+			"get": {
+				"tags": ["batch"],
+				"summary": "Poll a batch's progress",
+				"description": "Aggregate state of every job in the batch: how many finished, how many failed, and the per-job results for those that finished. Safe to poll repeatedly; each call recomputes from the database.",
+				"operationId": "get_batch_v1_batches__batch_id__get",
+				"parameters": [
+					{
+						"name": "batch_id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"title": "Batch Id"
+						}
+					},
+					{
+						"name": "X-API-Key",
+						"in": "header",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "API key identifying the caller.",
+							"auto_error": false,
+							"title": "X-Api-Key"
+						},
+						"description": "API key identifying the caller."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BatchProgressResponse"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Missing or invalid API key."
+					},
+					"404": {
+						"description": "No such batch."
+					},
+					"422": {
+						"description": "Validation Error",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HTTPValidationError"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/batches": {
+			"get": {
+				"tags": ["batch"],
+				"summary": "List batches",
+				"description": "Newest first, paginated, with per-batch completion counts. The counts are derived from the member jobs in a single grouped query, so they have the same never-stale guarantee as a poll. `limit` is capped at 100.",
+				"operationId": "list_batches_v1_batches_get",
+				"parameters": [
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"maximum": 100,
+							"minimum": 1,
+							"description": "Page size.",
+							"default": 20,
+							"title": "Limit"
+						},
+						"description": "Page size."
+					},
+					{
+						"name": "offset",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Batches to skip.",
+							"default": 0,
+							"title": "Offset"
+						},
+						"description": "Batches to skip."
+					},
+					{
+						"name": "X-API-Key",
+						"in": "header",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "API key identifying the caller.",
+							"auto_error": false,
+							"title": "X-Api-Key"
+						},
+						"description": "API key identifying the caller."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BatchList"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Missing or invalid API key."
+					},
+					"422": {
+						"description": "Validation Error",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HTTPValidationError"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/recipes": {
+			"post": {
+				"tags": ["recipes"],
+				"summary": "Save a recipe",
+				"description": "Stores a `GenerationSpec` under a unique name. The spec is validated on the way in, so a recipe can never be saved in a state the generator would reject.",
+				"operationId": "create_recipe_v1_recipes_post",
+				"parameters": [
+					{
+						"name": "X-API-Key",
+						"in": "header",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "API key identifying the caller.",
+							"auto_error": false,
+							"title": "X-Api-Key"
+						},
+						"description": "API key identifying the caller."
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/RecipeCreate"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/RecipeRead"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Missing or invalid API key."
+					},
+					"409": {
+						"description": "A recipe with that name exists."
+					},
+					"422": {
+						"description": "The spec is invalid."
+					}
+				}
+			},
+			"get": {
+				"tags": ["recipes"],
+				"summary": "List recipes",
+				"description": "Newest first, paginated. `limit` is capped at 100 so a single request cannot pull the whole table.",
+				"operationId": "list_recipes_v1_recipes_get",
+				"parameters": [
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"maximum": 100,
+							"minimum": 1,
+							"description": "Page size.",
+							"default": 20,
+							"title": "Limit"
+						},
+						"description": "Page size."
+					},
+					{
+						"name": "offset",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Recipes to skip.",
+							"default": 0,
+							"title": "Offset"
+						},
+						"description": "Recipes to skip."
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/RecipeList"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "Validation Error",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HTTPValidationError"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/recipes/{recipe_id}": {
+			"get": {
+				"tags": ["recipes"],
+				"summary": "Fetch a recipe",
+				"description": "Return one saved recipe.\n\nArgs:\n    request: Incoming request.\n    recipe_id: The recipe to fetch.\n    session: Async database session.\n\nReturns:\n    The recipe.\n\nRaises:\n    HTTPException: 404 if it does not exist.",
+				"operationId": "get_recipe_v1_recipes__recipe_id__get",
+				"parameters": [
+					{
+						"name": "recipe_id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"title": "Recipe Id"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/RecipeRead"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "No such recipe."
+					},
+					"422": {
+						"description": "Validation Error",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HTTPValidationError"
+								}
+							}
+						}
+					}
+				}
+			},
+			"put": {
+				"tags": ["recipes"],
+				"summary": "Update a recipe",
+				"description": "Partial update: send only the fields to change. Renaming to an existing name is a 409 rather than a silent overwrite.",
+				"operationId": "update_recipe_v1_recipes__recipe_id__put",
+				"parameters": [
+					{
+						"name": "recipe_id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"title": "Recipe Id"
+						}
+					},
+					{
+						"name": "X-API-Key",
+						"in": "header",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "API key identifying the caller.",
+							"auto_error": false,
+							"title": "X-Api-Key"
+						},
+						"description": "API key identifying the caller."
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/RecipeUpdate"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/RecipeRead"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Missing or invalid API key."
+					},
+					"404": {
+						"description": "No such recipe."
+					},
+					"409": {
+						"description": "That name is already taken."
+					},
+					"422": {
+						"description": "Validation Error",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HTTPValidationError"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"tags": ["recipes"],
+				"summary": "Delete a recipe",
+				"description": "Removes the recipe. Jobs already generated from it are untouched \u2014 the spec is denormalised onto each job row, so history stays reproducible.",
+				"operationId": "delete_recipe_v1_recipes__recipe_id__delete",
+				"parameters": [
+					{
+						"name": "recipe_id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"title": "Recipe Id"
+						}
+					},
+					{
+						"name": "X-API-Key",
+						"in": "header",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "API key identifying the caller.",
+							"auto_error": false,
+							"title": "X-Api-Key"
+						},
+						"description": "API key identifying the caller."
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Successful Response"
+					},
+					"401": {
+						"description": "Missing or invalid API key."
+					},
+					"404": {
+						"description": "No such recipe."
+					},
+					"422": {
+						"description": "Validation Error",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HTTPValidationError"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/v1/recipes/{recipe_id}/run": {
+			"post": {
+				"tags": ["recipes"],
+				"summary": "Generate from a saved recipe",
+				"description": "Queues a job using the recipe's stored spec. The job records the recipe it came from, so generated files can be traced back to the exact spec that produced them.",
+				"operationId": "run_recipe_v1_recipes__recipe_id__run_post",
+				"parameters": [
+					{
+						"name": "recipe_id",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"title": "Recipe Id"
+						}
+					},
+					{
+						"name": "X-API-Key",
+						"in": "header",
+						"required": false,
+						"schema": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "null"
+								}
+							],
+							"description": "API key identifying the caller.",
+							"auto_error": false,
+							"title": "X-Api-Key"
+						},
+						"description": "API key identifying the caller."
+					}
+				],
+				"responses": {
+					"202": {
+						"description": "Successful Response",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/RecipeRunResponse"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "Missing or invalid API key."
+					},
+					"404": {
+						"description": "No such recipe."
+					},
+					"503": {
+						"description": "The queue is unreachable."
+					},
+					"422": {
+						"description": "Validation Error",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HTTPValidationError"
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	},
+	"components": {
+		"schemas": {
+			"BatchList": {
+				"properties": {
+					"items": {
+						"items": {
+							"$ref": "#/components/schemas/BatchListItem"
+						},
+						"type": "array",
+						"title": "Items",
+						"description": "Batches in this page, newest first."
+					},
+					"total": {
+						"type": "integer",
+						"title": "Total",
+						"description": "Total batches matching the query."
+					},
+					"limit": {
+						"type": "integer",
+						"title": "Limit",
+						"description": "Page size applied."
+					},
+					"offset": {
+						"type": "integer",
+						"title": "Offset",
+						"description": "Offset applied."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["total", "limit", "offset"],
+				"title": "BatchList",
+				"description": "A page of batches."
+			},
+			"BatchListItem": {
+				"properties": {
+					"batch_id": {
+						"type": "string",
+						"title": "Batch Id",
+						"description": "Identifier shared by every job in the batch."
+					},
+					"completed": {
+						"type": "integer",
+						"title": "Completed",
+						"description": "Jobs that finished, with or without warnings."
+					},
+					"failed": {
+						"type": "integer",
+						"title": "Failed",
+						"description": "Jobs that failed."
+					},
+					"total": {
+						"type": "integer",
+						"title": "Total",
+						"description": "Jobs in the batch."
+					},
+					"created_at": {
+						"type": "string",
+						"format": "date-time",
+						"title": "Created At",
+						"description": "When the batch was submitted."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["batch_id", "completed", "failed", "total", "created_at"],
+				"title": "BatchListItem",
+				"description": "One batch as it appears in the batch list.\n\nCarries the same derived counts as :class:`BatchProgressResponse` but not\nthe per-job results \u2014 a list of N batches must not ship N full result sets."
+			},
+			"BatchOptions": {
+				"properties": {
+					"parallel": {
+						"type": "boolean",
+						"title": "Parallel",
+						"description": "Enqueue all jobs immediately.",
+						"default": true
+					},
+					"max_concurrent": {
+						"type": "integer",
+						"maximum": 64.0,
+						"minimum": 1.0,
+						"title": "Max Concurrent",
+						"description": "Maximum jobs the worker should run at once.",
+						"default": 4
+					},
+					"on_failure": {
+						"type": "string",
+						"enum": ["stop", "continue"],
+						"title": "On Failure",
+						"description": "What to do with the rest of the batch when a job fails.",
+						"default": "continue"
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"title": "BatchOptions",
+				"description": "How a multi-job batch should be executed.\n\nAttributes:\n    parallel: Enqueue every job immediately rather than one at a time.\n    max_concurrent: Ceiling on jobs running at once. The worker applies it;\n        the API passes it through, so submitting a batch of 50 with\n        ``max_concurrent=4`` costs the same as submitting 4.\n    on_failure: ``\"stop\"`` cancels the remaining jobs when one fails;\n        ``\"continue\"`` lets the batch finish so partial results are usable."
+			},
+			"BatchProgressResponse": {
+				"properties": {
+					"batch_id": {
+						"type": "string",
+						"title": "Batch Id",
+						"description": "The batch being polled."
+					},
+					"completed": {
+						"type": "integer",
+						"title": "Completed",
+						"description": "Jobs that finished, with or without warnings."
+					},
+					"failed": {
+						"type": "integer",
+						"title": "Failed",
+						"description": "Jobs that failed."
+					},
+					"total": {
+						"type": "integer",
+						"title": "Total",
+						"description": "Jobs in the batch."
+					},
+					"results": {
+						"items": {
+							"$ref": "#/components/schemas/GenerationResponse"
+						},
+						"type": "array",
+						"title": "Results",
+						"description": "Per-job results, in submission order."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["batch_id", "completed", "failed", "total"],
+				"title": "BatchProgressResponse",
+				"description": "Aggregate state of a batch, recomputed from its jobs on every poll.\n\nCounts are derived, never incremented in place: a poll always reflects the\ndatabase, so a worker crash cannot leave a batch permanently reporting 3 of\n4 when the truth is unknowable."
+			},
+			"BatchRequest": {
+				"properties": {
+					"specs": {
+						"items": {
+							"$ref": "#/components/schemas/GenerationSpec"
+						},
+						"type": "array",
+						"maxItems": 100,
+						"minItems": 1,
+						"title": "Specs",
+						"description": "One spec per job. Each is queued as its own job."
+					},
+					"options": {
+						"$ref": "#/components/schemas/BatchOptions",
+						"description": "Batch execution options."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["specs"],
+				"title": "BatchRequest",
+				"description": "A batch of independent generation jobs submitted together."
+			},
+			"BatchSubmitResponse": {
+				"properties": {
+					"batch_id": {
+						"type": "string",
+						"title": "Batch Id",
+						"description": "Identifier shared by every job in the batch."
+					},
+					"total_jobs": {
+						"type": "integer",
+						"title": "Total Jobs",
+						"description": "How many jobs were created."
+					},
+					"poll_url": {
+						"type": "string",
+						"title": "Poll Url",
+						"description": "Path to poll for the batch's progress."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["batch_id", "total_jobs", "poll_url"],
+				"title": "BatchSubmitResponse",
+				"description": "Acknowledgement returned when a batch is accepted."
+			},
+			"GeneratedFile": {
+				"properties": {
+					"url": {
+						"type": "string",
+						"minLength": 1,
+						"title": "Url",
+						"description": "Download URL for the rendered file (typically a signed URL)."
+					},
+					"duration_ms": {
+						"anyOf": [
+							{
+								"type": "integer",
+								"exclusiveMinimum": 0.0
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Duration Ms",
+						"description": "Measured length of the rendered file, when analysed."
+					},
+					"peak_db": {
+						"anyOf": [
+							{
+								"type": "number",
+								"maximum": 0.0
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Peak Db",
+						"description": "Measured peak level in dBFS, when analysed."
+					},
+					"spectral_analysis": {
+						"anyOf": [
+							{
+								"$ref": "#/components/schemas/SpectralAnalysis"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "Post-generation spectral and temporal measurements, when analysed."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["url"],
+				"title": "GeneratedFile",
+				"description": "A single rendered variant produced by a generation job.\n\nOnly :attr:`url` is guaranteed: a job row records where each variant landed,\nand the measurements are filled in when the analysis pass runs over the\nstored file. They are optional rather than zeroed so a consumer can tell\n\"not measured\" from \"measured as zero\" \u2014 a peak of 0 dBFS is a clipped\nmaster, not a missing value."
+			},
+			"GenerationResponse": {
+				"properties": {
+					"job_id": {
+						"type": "string",
+						"title": "Job Id",
+						"description": "Identifier of the generation job."
+					},
+					"status": {
+						"type": "string",
+						"enum": ["queued", "processing", "complete", "complete_with_warnings", "failed"],
+						"title": "Status",
+						"description": "Current or final job status."
+					},
+					"files": {
+						"items": {
+							"$ref": "#/components/schemas/GeneratedFile"
+						},
+						"type": "array",
+						"title": "Files",
+						"description": "Rendered variants, one per successful sample in the batch."
+					},
+					"constraints_met": {
+						"additionalProperties": {
+							"type": "boolean"
+						},
+						"type": "object",
+						"title": "Constraints Met",
+						"description": "Per-constraint pass/fail map, keyed by constraint name (e.g. {'fundamental_hz': true, 'spectral_ceiling_hz': true}). Built by GenerationSpec.evaluate_constraints, so when a job completes normally it carries a verdict on every hard constraint."
+					},
+					"spec": {
+						"anyOf": [
+							{
+								"$ref": "#/components/schemas/GenerationSpec"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The spec this job was submitted with, echoed back so a client can rebuild overlays and reports without having kept its own copy. None only when the stored spec no longer validates."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["job_id", "status"],
+				"title": "GenerationResponse",
+				"description": "Result of a generation job, returned by the API and the worker.\n\nOne entry is present in :attr:`files` per generated variant, so\n``len(files)`` should equal the spec's ``batch_size`` on success."
+			},
+			"GenerationSpec": {
+				"properties": {
+					"type": {
+						"type": "string",
+						"enum": ["one_shot", "loop", "texture", "stinger"],
+						"title": "Type",
+						"description": "Sound archetype. 'one_shot' is a single hit (kick, snare), 'loop' is a beat-aligned loop, 'texture' is an evolving bed or drone, and 'stinger' is a short dramatic transition."
+					},
+					"category": {
+						"type": "string",
+						"maxLength": 64,
+						"minLength": 1,
+						"title": "Category",
+						"description": "Instrument/role slug, e.g. 'kick', 'snare', 'hihat', 'riser', 'impact', 'pad'.",
+						"examples": ["kick"]
+					},
+					"duration_ms": {
+						"anyOf": [
+							{
+								"type": "integer",
+								"exclusiveMinimum": 0.0
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Duration Ms",
+						"description": "Length in milliseconds. Required for every type except 'loop'. For loops this field is derived from duration_beats and bpm."
+					},
+					"duration_beats": {
+						"anyOf": [
+							{
+								"type": "number",
+								"exclusiveMinimum": 0.0
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Duration Beats",
+						"description": "Length in beats (e.g. 2.0 for a one-bar loop at 4/4). Required when type='loop'; ignored otherwise."
+					},
+					"sample_rate": {
+						"type": "integer",
+						"title": "Sample Rate",
+						"description": "Sample rate in Hz.",
+						"default": 44100
+					},
+					"bit_depth": {
+						"type": "integer",
+						"title": "Bit Depth",
+						"description": "Bit depth of the written file.",
+						"default": 24
+					},
+					"channels": {
+						"type": "integer",
+						"title": "Channels",
+						"description": "1 = mono, 2 = stereo.",
+						"default": 2
+					},
+					"fundamental_hz": {
+						"prefixItems": [
+							{
+								"type": "number"
+							},
+							{
+								"type": "number"
+							}
+						],
+						"type": "array",
+						"maxItems": 2,
+						"minItems": 2,
+						"title": "Fundamental Hz",
+						"description": "Permitted range for the fundamental frequency as (min_hz, max_hz). Hard constraint: the generated fundamental is pitch-shifted into this window.",
+						"examples": [[40.0, 90.0]]
+					},
+					"spectral_ceiling_hz": {
+						"type": "number",
+						"exclusiveMinimum": 0.0,
+						"title": "Spectral Ceiling Hz",
+						"description": "Low-pass corner in Hz. All energy above this frequency is rolled off (hard constraint)."
+					},
+					"spectral_floor_hz": {
+						"type": "number",
+						"minimum": 0.0,
+						"title": "Spectral Floor Hz",
+						"description": "High-pass corner in Hz. All energy below this frequency is removed (hard constraint). Must stay below fundamental_hz[0]."
+					},
+					"spectral_tilt_db_per_octave": {
+						"type": "number",
+						"maximum": 24.0,
+						"minimum": -24.0,
+						"title": "Spectral Tilt Db Per Octave",
+						"description": "Spectral tilt applied per octave above the fundamental. Negative values darken the sample, positive values brighten it. 0.0 leaves the natural balance untouched.",
+						"default": 0.0
+					},
+					"peak_db": {
+						"type": "number",
+						"maximum": 0.0,
+						"minimum": -100.0,
+						"title": "Peak Db",
+						"description": "Target peak level in dBFS (e.g. -12.0). The output is normalised to this value; it must not exceed 0 dBFS to avoid clipping."
+					},
+					"attack_ms": {
+						"type": "number",
+						"minimum": 0.0,
+						"title": "Attack Ms",
+						"description": "Attack time in milliseconds."
+					},
+					"decay_ms": {
+						"type": "number",
+						"minimum": 0.0,
+						"title": "Decay Ms",
+						"description": "Decay time in milliseconds."
+					},
+					"sustain_level": {
+						"type": "number",
+						"maximum": 1.0,
+						"minimum": 0.0,
+						"title": "Sustain Level",
+						"description": "Sustain amplitude as a 0-1 fraction of the peak level."
+					},
+					"release_ms": {
+						"type": "number",
+						"minimum": 0.0,
+						"title": "Release Ms",
+						"description": "Release time in milliseconds."
+					},
+					"bpm": {
+						"type": "number",
+						"maximum": 400.0,
+						"exclusiveMinimum": 0.0,
+						"title": "Bpm",
+						"description": "Tempo in BPM. Soft conditioning \u2014 except for loops, where it also defines the sample's real duration."
+					},
+					"key": {
+						"type": "string",
+						"maxLength": 32,
+						"minLength": 1,
+						"title": "Key",
+						"description": "Musical key, e.g. 'F#m', 'C major', 'A min'."
+					},
+					"genre": {
+						"type": "string",
+						"maxLength": 64,
+						"minLength": 1,
+						"title": "Genre",
+						"description": "Target genre, e.g. 'techno', 'house', 'cinematic'."
+					},
+					"mood": {
+						"anyOf": [
+							{
+								"type": "string",
+								"maxLength": 64
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Mood",
+						"description": "Optional mood descriptor, e.g. 'dark', 'aggressive', 'ethereal'."
+					},
+					"reference_sample_url": {
+						"anyOf": [
+							{
+								"type": "string",
+								"maxLength": 2048
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Reference Sample Url",
+						"description": "Optional URL of a reference sample ('make something like this'). Soft conditioning only \u2014 the model never copies the reference."
+					},
+					"batch_size": {
+						"type": "integer",
+						"maximum": 64.0,
+						"minimum": 1.0,
+						"title": "Batch Size",
+						"description": "Number of variants to generate for this spec.",
+						"default": 1
+					},
+					"diversity": {
+						"type": "number",
+						"maximum": 1.0,
+						"minimum": 0.0,
+						"title": "Diversity",
+						"description": "Variation between batch items: 0.0 = identical, 1.0 = maximum variation.",
+						"default": 0.5
+					},
+					"format": {
+						"type": "string",
+						"enum": ["wav", "flac", "mp3"],
+						"title": "Format",
+						"description": "Container/codec of the delivered file.",
+						"default": "wav"
+					},
+					"metadata_embed": {
+						"type": "boolean",
+						"title": "Metadata Embed",
+						"description": "Embed licence and generation parameters in the file metadata (ID3v2 for mp3, VBRI for flac, LIST/INFO for wav).",
+						"default": true
+					},
+					"stereo_width": {
+						"anyOf": [
+							{
+								"type": "number",
+								"maximum": 4.0,
+								"minimum": 0.0
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Stereo Width",
+						"description": "Target side/mid level ratio, enforced with M/S processing. 0.0 collapses the sample to mono, 1.0 gives an equal side and mid level, higher values exaggerate the stereo image. None leaves the model's own width untouched."
+					},
+					"tolerances": {
+						"$ref": "#/components/schemas/Tolerances",
+						"description": "Slack applied when checking the rendered output against this spec's hard constraints. See :meth:`evaluate_constraints`."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": [
+					"type",
+					"category",
+					"fundamental_hz",
+					"spectral_ceiling_hz",
+					"spectral_floor_hz",
+					"peak_db",
+					"attack_ms",
+					"decay_ms",
+					"sustain_level",
+					"release_ms",
+					"bpm",
+					"key",
+					"genre"
+				],
+				"title": "GenerationSpec",
+				"description": "A machine-readable specification of a single audio sample.\n\nA spec is the only input the generation pipeline needs. It answers four\nquestions:\n\n1. **What kind of sound?** \u2014 :attr:`type`, :attr:`category`.\n2. **How long and in what format?** \u2014 :attr:`duration_ms` /\n   :attr:`duration_beats`, :attr:`sample_rate`, :attr:`bit_depth`,\n   :attr:`channels`, :attr:`format`, :attr:`metadata_embed`.\n3. **What must the signal obey?** \u2014 the *hard* constraints\n   (:attr:`fundamental_hz`, :attr:`spectral_floor_hz`,\n   :attr:`spectral_ceiling_hz`, :attr:`spectral_tilt_db_per_octave`,\n   :attr:`peak_db`, and the ADSR envelope in :attr:`attack_ms`,\n   :attr:`decay_ms`, :attr:`sustain_level`, :attr:`release_ms`).\n   These are enforced by DSP post-processing and then re-measured; the\n   result is reported back in :class:`SpectralAnalysis` and judged by\n   :meth:`evaluate_constraints` against :attr:`tolerances`.\n4. **What musical context should bias the model?** \u2014 the *soft* context\n   (:attr:`bpm`, :attr:`key`, :attr:`genre`, :attr:`mood`,\n   :attr:`reference_sample_url`). The model is conditioned on these, but\n   they are never guaranteed: a loop tagged ``128 BPM`` may contain\n   microtiming that a human then straightens out.\n\nThe distinction matters when reading generation results: a hard constraint\nthat was missed is a bug in the post-processing chain, while a soft hint\nthat was ignored is not.\n\n**Duration handling.** Time-based samples (:attr:`type` other than\n``\"loop\"``) are measured in milliseconds via :attr:`duration_ms`.\nLoops are measured in beats via :attr:`duration_beats` and additionally\nrequire :attr:`bpm`, which lets the validator derive the loop's real\nduration (``beats * 60000 / bpm``) so the envelope and duration\nconstraints can be checked for loops as well.\n\n**Cross-field validation** (performed in a single ``model_validator``):\n\n* ``type=\"loop\"`` requires :attr:`duration_beats` and :attr:`bpm`; every\n  other type requires :attr:`duration_ms`.\n* :attr:`fundamental_hz` must be an ascending, positive range.\n* The fundamental must sit strictly *inside* the usable band:\n  ``spectral_floor_hz < fundamental_min <= fundamental_max <\n  spectral_ceiling_hz``. A fundamental outside the band would be removed\n  by its own high-pass/low-pass, making the spec self-contradictory.\n* ``attack_ms + decay_ms + release_ms < duration_ms`` \u2014 the envelope has to\n  fit inside the sample with room to spare.\n\nExamples:\n    >>> spec = GenerationSpec(\n    ...     type=\"one_shot\",\n    ...     category=\"kick\",\n    ...     duration_ms=800,\n    ...     fundamental_hz=(40.0, 90.0),\n    ...     spectral_floor_hz=25.0,\n    ...     spectral_ceiling_hz=12000.0,\n    ...     peak_db=-12.0,\n    ...     attack_ms=1.0,\n    ...     decay_ms=400.0,\n    ...     sustain_level=0.0,\n    ...     release_ms=50.0,\n    ...     bpm=140.0,\n    ...     key=\"F#m\",\n    ...     genre=\"techno\",\n    ... )\n    >>> spec.duration_ms\n    800",
+				"example": {
+					"attack_ms": 1.0,
+					"batch_size": 4,
+					"bit_depth": 24,
+					"bpm": 140.0,
+					"category": "kick",
+					"channels": 2,
+					"decay_ms": 400.0,
+					"diversity": 0.7,
+					"duration_ms": 800,
+					"format": "wav",
+					"fundamental_hz": [40.0, 90.0],
+					"genre": "techno",
+					"key": "F#m",
+					"metadata_embed": true,
+					"mood": "dark",
+					"peak_db": -12.0,
+					"release_ms": 50.0,
+					"sample_rate": 44100,
+					"spectral_ceiling_hz": 12000.0,
+					"spectral_floor_hz": 25.0,
+					"spectral_tilt_db_per_octave": -3.0,
+					"sustain_level": 0.0,
+					"type": "one_shot"
+				}
+			},
+			"HTTPValidationError": {
+				"properties": {
+					"detail": {
+						"items": {
+							"$ref": "#/components/schemas/ValidationError"
+						},
+						"type": "array",
+						"title": "Detail"
+					}
+				},
+				"type": "object",
+				"title": "HTTPValidationError"
+			},
+			"HealthResponse": {
+				"properties": {
+					"status": {
+						"type": "string",
+						"enum": ["ok", "degraded"],
+						"title": "Status",
+						"description": "'degraded' when a dependency is unavailable."
+					},
+					"model_loaded": {
+						"type": "boolean",
+						"title": "Model Loaded",
+						"description": "Whether this process already holds a loaded generator."
+					},
+					"gpu_available": {
+						"type": "boolean",
+						"title": "Gpu Available",
+						"description": "Whether a CUDA device is usable."
+					},
+					"queue_depth": {
+						"anyOf": [
+							{
+								"type": "integer",
+								"minimum": 0.0
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Queue Depth",
+						"description": "Jobs waiting in the arq queue, or null when the broker could not be reached. Null, not 0: an unreachable broker and an empty queue are different situations."
+					},
+					"version": {
+						"type": "string",
+						"title": "Version",
+						"description": "Service version."
+					},
+					"detail": {
+						"anyOf": [
+							{
+								"type": "string"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Detail",
+						"description": "Why the service is degraded, when it is."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["status", "model_loaded", "gpu_available", "version"],
+				"title": "HealthResponse",
+				"description": "Service health, as reported by ``GET /v1/health``.\n\n``status`` is ``\"ok\"`` or ``\"degraded\"``. The HTTP status stays 200 either\nway: a 503 would take the instance out of a load balancer's rotation, which\nis the opposite of what an operator wants when one optional component is\nunhappy."
+			},
+			"JobList": {
+				"properties": {
+					"items": {
+						"items": {
+							"$ref": "#/components/schemas/JobListItem"
+						},
+						"type": "array",
+						"title": "Items",
+						"description": "Jobs in this page, newest first."
+					},
+					"total": {
+						"type": "integer",
+						"title": "Total",
+						"description": "Total jobs matching the query."
+					},
+					"limit": {
+						"type": "integer",
+						"title": "Limit",
+						"description": "Page size applied."
+					},
+					"offset": {
+						"type": "integer",
+						"title": "Offset",
+						"description": "Offset applied."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["total", "limit", "offset"],
+				"title": "JobList",
+				"description": "A page of recent jobs."
+			},
+			"JobListItem": {
+				"properties": {
+					"job_id": {
+						"type": "string",
+						"title": "Job Id",
+						"description": "Identifier of the generation job."
+					},
+					"status": {
+						"type": "string",
+						"enum": ["queued", "processing", "complete", "complete_with_warnings", "failed"],
+						"title": "Status",
+						"description": "Current or final job status."
+					},
+					"files": {
+						"items": {
+							"$ref": "#/components/schemas/GeneratedFile"
+						},
+						"type": "array",
+						"title": "Files",
+						"description": "Rendered variants, one per successful sample in the batch."
+					},
+					"constraints_met": {
+						"additionalProperties": {
+							"type": "boolean"
+						},
+						"type": "object",
+						"title": "Constraints Met",
+						"description": "Per-constraint pass/fail map, keyed by constraint name (e.g. {'fundamental_hz': true, 'spectral_ceiling_hz': true}). Built by GenerationSpec.evaluate_constraints, so when a job completes normally it carries a verdict on every hard constraint."
+					},
+					"spec": {
+						"anyOf": [
+							{
+								"$ref": "#/components/schemas/GenerationSpec"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The spec this job was submitted with, echoed back so a client can rebuild overlays and reports without having kept its own copy. None only when the stored spec no longer validates."
+					},
+					"batch_id": {
+						"anyOf": [
+							{
+								"type": "string"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Batch Id",
+						"description": "Batch this job belongs to, if any."
+					},
+					"recipe_id": {
+						"anyOf": [
+							{
+								"type": "string"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Recipe Id",
+						"description": "Recipe this job was launched from, if any."
+					},
+					"created_at": {
+						"type": "string",
+						"format": "date-time",
+						"title": "Created At",
+						"description": "When the job was submitted."
+					},
+					"updated_at": {
+						"type": "string",
+						"format": "date-time",
+						"title": "Updated At",
+						"description": "When the job last changed state."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["job_id", "status", "created_at", "updated_at"],
+				"title": "JobListItem",
+				"description": "One job as it appears in the recent-jobs list.\n\nA superset of :class:`GenerationResponse`: everything a job poll returns,\nplus the row metadata a list needs (ownership by a batch or recipe, and\nwhen the job was created and last touched)."
+			},
+			"JobSubmitResponse": {
+				"properties": {
+					"job_id": {
+						"type": "string",
+						"title": "Job Id",
+						"description": "Identifier of the queued job."
+					},
+					"status": {
+						"type": "string",
+						"enum": ["queued", "processing", "complete", "complete_with_warnings", "failed"],
+						"title": "Status",
+						"description": "Job status at submission time."
+					},
+					"poll_url": {
+						"type": "string",
+						"title": "Poll Url",
+						"description": "Path to poll for the job's result."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["job_id", "status", "poll_url"],
+				"title": "JobSubmitResponse",
+				"description": "Acknowledgement returned when a job is accepted.\n\nCarries the poll URL rather than making the client construct it, so the\npath shape lives in one place."
+			},
+			"RecipeCreate": {
+				"properties": {
+					"name": {
+						"type": "string",
+						"maxLength": 128,
+						"minLength": 1,
+						"title": "Name",
+						"description": "Unique recipe name."
+					},
+					"description": {
+						"anyOf": [
+							{
+								"type": "string",
+								"maxLength": 512
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Description",
+						"description": "What this recipe is for."
+					},
+					"spec": {
+						"$ref": "#/components/schemas/GenerationSpec",
+						"description": "The spec to save."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["name", "spec"],
+				"title": "RecipeCreate",
+				"description": "A named, reusable spec saved for later."
+			},
+			"RecipeList": {
+				"properties": {
+					"items": {
+						"items": {
+							"$ref": "#/components/schemas/RecipeRead"
+						},
+						"type": "array",
+						"title": "Items",
+						"description": "Recipes in this page, newest first."
+					},
+					"total": {
+						"type": "integer",
+						"title": "Total",
+						"description": "Total recipes matching the query."
+					},
+					"limit": {
+						"type": "integer",
+						"title": "Limit",
+						"description": "Page size applied."
+					},
+					"offset": {
+						"type": "integer",
+						"title": "Offset",
+						"description": "Offset applied."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["total", "limit", "offset"],
+				"title": "RecipeList",
+				"description": "A page of recipes."
+			},
+			"RecipeRead": {
+				"properties": {
+					"id": {
+						"type": "string",
+						"title": "Id",
+						"description": "Recipe identifier."
+					},
+					"name": {
+						"type": "string",
+						"title": "Name",
+						"description": "Unique recipe name."
+					},
+					"description": {
+						"anyOf": [
+							{
+								"type": "string"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Description",
+						"description": "What it is for."
+					},
+					"spec": {
+						"$ref": "#/components/schemas/GenerationSpec",
+						"description": "The stored spec."
+					},
+					"created_at": {
+						"type": "string",
+						"format": "date-time",
+						"title": "Created At",
+						"description": "When the recipe was saved."
+					},
+					"updated_at": {
+						"type": "string",
+						"format": "date-time",
+						"title": "Updated At",
+						"description": "When the recipe was last modified."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["id", "name", "spec", "created_at", "updated_at"],
+				"title": "RecipeRead",
+				"description": "A saved recipe as returned by the API."
+			},
+			"RecipeRunResponse": {
+				"properties": {
+					"job_id": {
+						"type": "string",
+						"title": "Job Id",
+						"description": "Identifier of the queued job."
+					},
+					"status": {
+						"type": "string",
+						"enum": ["queued", "processing", "complete", "complete_with_warnings", "failed"],
+						"title": "Status",
+						"description": "Job status at submission time."
+					},
+					"poll_url": {
+						"type": "string",
+						"title": "Poll Url",
+						"description": "Path to poll for the job's result."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": ["job_id", "status", "poll_url"],
+				"title": "RecipeRunResponse",
+				"description": "Acknowledgement for a job launched from a saved recipe."
+			},
+			"RecipeUpdate": {
+				"properties": {
+					"name": {
+						"anyOf": [
+							{
+								"type": "string",
+								"maxLength": 128,
+								"minLength": 1
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Name",
+						"description": "New name."
+					},
+					"description": {
+						"anyOf": [
+							{
+								"type": "string",
+								"maxLength": 512
+							},
+							{
+								"type": "null"
+							}
+						],
+						"title": "Description",
+						"description": "New description."
+					},
+					"spec": {
+						"anyOf": [
+							{
+								"$ref": "#/components/schemas/GenerationSpec"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "New spec."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"title": "RecipeUpdate",
+				"description": "Partial update of a saved recipe.\n\nEvery field is optional, so a caller can rename a recipe without resending\nthe spec, or edit the spec without touching the name."
+			},
+			"SpectralAnalysis": {
+				"properties": {
+					"fundamental_detected_hz": {
+						"type": "number",
+						"exclusiveMinimum": 0.0,
+						"title": "Fundamental Detected Hz",
+						"description": "Fundamental frequency measured in the output, in Hz."
+					},
+					"ceiling_violation_db": {
+						"type": "number",
+						"title": "Ceiling Violation Db",
+						"description": "Energy found above spectral_ceiling_hz, in dB relative to the ceiling. 0.0 or less means the roll-off held; positive values mean the ceiling was exceeded."
+					},
+					"attack_measured_ms": {
+						"type": "number",
+						"minimum": 0.0,
+						"title": "Attack Measured Ms",
+						"description": "Attack time measured in the output, in milliseconds."
+					},
+					"floor_slope_db_per_oct": {
+						"type": "number",
+						"maximum": 0.0,
+						"title": "Floor Slope Db Per Oct",
+						"description": "Measured high-pass slope below spectral_floor_hz, in dB per octave. Negative values mean energy falls as frequency drops: -6 is a single-pole filter, -24 is a 4-pole one. Values >= 0 mean no usable high-pass was applied."
+					},
+					"tilt_measured_db_per_octave": {
+						"type": "number",
+						"maximum": 24.0,
+						"minimum": -24.0,
+						"title": "Tilt Measured Db Per Octave",
+						"description": "Measured spectral slope above the fundamental, in dB per octave. Compared against the spec's spectral_tilt_db_per_octave to confirm the requested darkening or brightening was actually applied."
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"required": [
+					"fundamental_detected_hz",
+					"ceiling_violation_db",
+					"attack_measured_ms",
+					"floor_slope_db_per_oct",
+					"tilt_measured_db_per_octave"
+				],
+				"title": "SpectralAnalysis",
+				"description": "Measurements taken from a generated file *after* post-processing.\n\nThese are the empirical values, not the requested ones. Comparing them\nagainst the originating :class:`GenerationSpec` tells you whether the hard\nconstraints were actually honoured.\n\nThe first three fields come from point measurements (a pitch estimate, a\nband energy ratio, an envelope segmentation). :attr:`floor_slope_db_per_oct`\nand :attr:`tilt_measured_db_per_octave` come from least-squares slope fits\nover the spectrum, which is why they are reported as dB per octave rather\nthan absolute dB."
+			},
+			"Tolerances": {
+				"properties": {
+					"fundamental_hz": {
+						"type": "number",
+						"minimum": 0.0,
+						"title": "Fundamental Hz",
+						"description": "Slack in Hz added to *both* edges of fundamental_hz when checking the detected fundamental. Raise it for wide-window windows (e.g. pads) where small pitch deviations are inaudible.",
+						"default": 5.0
+					},
+					"ceiling_violation_db": {
+						"type": "number",
+						"maximum": 0.0,
+						"title": "Ceiling Violation Db",
+						"description": "Maximum tolerated stopband energy above spectral_ceiling_hz, in dB relative to the passband. The default -40 dB demands a clean roll-off; must be <= 0 (a positive value would defeat the constraint entirely).",
+						"default": -40.0
+					},
+					"floor_slope_db_per_oct": {
+						"type": "number",
+						"maximum": 0.0,
+						"title": "Floor Slope Db Per Oct",
+						"description": "Steepest high-pass roll-off accepted below spectral_floor_hz, in dB per octave. The default -12 dB/oct requires at least a 2-pole high-pass (-24 dB/oct would satisfy it comfortably); a shallower measurement means low-end energy is bleeding through.",
+						"default": -12.0
+					},
+					"peak_db": {
+						"type": "number",
+						"minimum": 0.0,
+						"title": "Peak Db",
+						"description": "Absolute tolerance in dB around the target peak level.",
+						"default": 0.5
+					},
+					"attack_ms": {
+						"type": "number",
+						"minimum": 0.0,
+						"title": "Attack Ms",
+						"description": "Absolute tolerance in milliseconds on the measured attack.",
+						"default": 2.0
+					},
+					"tilt_db_per_octave": {
+						"type": "number",
+						"minimum": 0.0,
+						"title": "Tilt Db Per Octave",
+						"description": "Absolute tolerance in dB per octave on the measured spectral tilt versus spectral_tilt_db_per_octave. Slopes are fitted across many octaves, so this is naturally looser than the level tolerances.",
+						"default": 1.5
+					},
+					"duration_pct": {
+						"type": "number",
+						"maximum": 1.0,
+						"minimum": 0.0,
+						"title": "Duration Pct",
+						"description": "Relative tolerance on total duration (0.02 = 2%). One rendered sample at 44.1 kHz is 2.3 ms, so the default already permits off-by-one rounding.",
+						"default": 0.02
+					},
+					"stereo_width": {
+						"type": "number",
+						"minimum": 0.0,
+						"title": "Stereo Width",
+						"description": "Absolute tolerance on the measured side/mid ratio. M/S rescaling hits its target closely, so this is mostly a guard against the ratio being undefined on near-mono material.",
+						"default": 0.05
+					}
+				},
+				"additionalProperties": false,
+				"type": "object",
+				"title": "Tolerances",
+				"description": "Per-constraint slack used when verifying a rendered sample.\n\nDSP post-processing can only ever get *close* to a target: a filter's\nroll-off is finite, a fade is sample-quantised, and a peak normaliser lands\non the nearest representable step. Without tolerances, every generated file\nwould report as a constraint violation over floating-point dust.\n\nTolerances turn the spec's exact targets into pass/fail bands for\n:meth:`GenerationSpec.evaluate_constraints`. Defaults are tuned to be tight\nenough to catch real failures (a wrong pitch, a missing low-pass, a clipped\nmaster) while ignoring measurement noise. Loosen them when you want\n\"close enough to use\", tighten them when you want a QC gate.\n\nSlack tolerances are non-negative \u2014 a negative one would make the constraint\nunsatisfiable. The two roll-off thresholds (:attr:`ceiling_violation_db` and\n:attr:`floor_slope_db_per_oct`) are instead required to be non-positive,\nbecause they bound how much energy may leak past a filter, not how far a\nmeasurement may drift from its target."
+			},
+			"ValidationError": {
+				"properties": {
+					"loc": {
+						"items": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "integer"
+								}
+							]
+						},
+						"type": "array",
+						"title": "Location"
+					},
+					"msg": {
+						"type": "string",
+						"title": "Message"
+					},
+					"type": {
+						"type": "string",
+						"title": "Error Type"
+					},
+					"input": {
+						"title": "Input"
+					},
+					"ctx": {
+						"type": "object",
+						"title": "Context"
+					}
+				},
+				"type": "object",
+				"required": ["loc", "msg", "type"],
+				"title": "ValidationError"
+			}
+		}
+	},
+	"tags": [
+		{
+			"name": "health",
+			"description": "Liveness and readiness."
+		},
+		{
+			"name": "generation",
+			"description": "Queue generation jobs."
+		},
+		{
+			"name": "jobs",
+			"description": "Poll job status and results."
+		},
+		{
+			"name": "batch",
+			"description": "Submit and track batches of jobs."
+		},
+		{
+			"name": "recipes",
+			"description": "Save and reuse generation specs."
+		}
+	]
+}

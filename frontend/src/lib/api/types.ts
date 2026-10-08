@@ -1,0 +1,23 @@
+import type { components } from '#lib/api/schema.js';
+
+export type GenerationSpec = components['schemas']['GenerationSpec'];
+export type GenerationResponse = components['schemas']['GenerationResponse'];
+export type GeneratedFile = components['schemas']['GeneratedFile'];
+export type JobStatus = GenerationResponse['status'];
+export type JobSubmitResponse = components['schemas']['JobSubmitResponse'];
+export type JobList = components['schemas']['JobList'];
+export type JobListItem = components['schemas']['JobListItem'];
+export type BatchRequest = components['schemas']['BatchRequest'];
+export type BatchOptions = components['schemas']['BatchOptions'];
+export type BatchSubmitResponse = components['schemas']['BatchSubmitResponse'];
+export type BatchList = components['schemas']['BatchList'];
+export type BatchListItem = components['schemas']['BatchListItem'];
+export type BatchProgressResponse = components['schemas']['BatchProgressResponse'];
+export type HealthResponse = components['schemas']['HealthResponse'];
+export type RecipeRead = components['schemas']['RecipeRead'];
+export type RecipeList = components['schemas']['RecipeList'];
+export type RecipeCreate = components['schemas']['RecipeCreate'];
+export type RecipeUpdate = components['schemas']['RecipeUpdate'];
+export type RecipeRunResponse = components['schemas']['RecipeRunResponse'];
+export type SpectralAnalysis = components['schemas']['SpectralAnalysis'];
+export type Tolerances = components['schemas']['Tolerances'];

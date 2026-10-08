@@ -1,0 +1,55 @@
+# Build context exclusions. Everything here is either rebuilt inside the image,
+# machine-local, or a secret that must never reach a layer.
+
+# Secrets. .env is read at runtime by pydantic-settings; baking it into an image
+# would leak API keys and DB passwords to anyone who can pull the layer.
+.env
+.env.*
+!.env.example
+
+# Version control and CI.
+.git
+.gitignore
+.github
+
+# Local virtualenvs. Copying one in would shadow the image's own /app/.venv.
+.venv
+venv
+env
+
+# Byte-code and tooling caches. Rebuilding these inside the image is cheaper than
+# uploading megabytes of them.
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Generated artifacts. Rendered samples are large, and a stale copy in the image
+# would be a stale copy forever.
+var/
+*.wav
+*.flac
+*.mp3
+
+# Test and coverage output. `make test` runs on the host.
+tests/
+.pytest_cache/
+
+# Docs and scratch files: not needed to serve an API.
+README.md
+*.md
+!README.md
+Makefile
+
+# Editor noise.
+.vscode/
+.idea/
+*.swp
+*.bak

@@ -1,0 +1,124 @@
+[project]
+name = "sampleforge"
+version = "0.1.0"
+description = "Constraint-enforced audio sample generation API."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+
+# Runtime dependencies. Pinned loosely on purpose: uv.lock is the lock, this list
+# is the contract. Anything added here must be imported by app/ code that runs in
+# production, not just by tests.
+dependencies = [
+    # Web layer.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "slowapi>=0.1.9",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "structlog>=24.4",
+    # Persistence. Alembic is a runtime dependency, not a dev one: the compose
+    # `migrate` service runs `alembic upgrade head` from this same image, so it
+    # has to ship in the runtime layer.
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    # Queue.
+    "arq>=0.26",
+    "redis>=5.2",
+    # DSP. librosa pulls numba/llvmlite/audioread; soundfile wraps libsndfile for
+    # wav/flac/mp3 encoding.
+    "librosa>=0.10.2",
+    "scipy>=1.14",
+    "soundfile>=0.12",
+    # Object storage.
+    "boto3>=1.35",
+    # Inference. On Linux this resolves to the CUDA 12.6 build below; it still
+    # runs on CPU-only hosts, where torch.cuda.is_available() returns False and
+    # app.core.config.device picks the device.
+    "torch>=2.5",
+]
+
+[dependency-groups]
+# uv's native dev group, and the single source of truth for test/lint tooling.
+# Deliberately not mirrored under [project.optional-dependencies]: two lists that
+# must stay in sync is one too many. `uv sync --group dev` installs this.
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "aiosqlite>=0.20",  # the test suite runs against SQLite, not Postgres
+    "asgi-lifespan>=2.1",  # httpx's ASGI transport does not run startup/shutdown
+    "httpx>=0.27",        # used by the API tests
+]
+
+[tool.uv]
+# The project is an application, not a library: nothing needs to `pip install
+# sampleforge`, and the image runs straight out of /app. Building a wheel would
+# put a second, frozen copy of app/ inside site-packages that could drift from
+# the source sitting beside it.
+package = false
+
+# Torch on PyPI for Linux is the CUDA 13 build, and AGENTS.md pins this project to
+# CUDA 12.x drivers. The marker keeps the CUDA 12.6 index for Linux (where the
+# worker runs) and lets Windows/macOS dev installs fall through to PyPI, which
+# publishes no cu126 wheels at all. `explicit = true` stops this index from being
+# consulted for any other package.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Tests mark async cases explicitly with @pytest.mark.asyncio, so strict mode
+# stays on: an unmarked async test should fail loudly, not silently pass.
+asyncio_mode = "strict"
+addopts = "-ra --strict-markers"
+filterwarnings = [
+    # Warnings raised from our own code are bugs; third-party deprecations are
+    # not ours to fail a build over.
+    "error::DeprecationWarning:app.*",
+    "error::RuntimeWarning:app.*",
+]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.$",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+# Deliberately not `select = ["ALL"]`. These are the rules that catch real bugs
+# (unused names, shadowed builtins, silent async mistakes) without a rewrite of
+# the codebase. PL/S/ASYNC were tried and dropped: they flagged ~100 pre-existing
+# spots that are fine in context, which is a tuning exercise, not a lint run.
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "BLE"]
+ignore = [
+    # B008: Depends()/Query() defaults are FastAPI's idiom. Where it was avoidable
+    # (the session dependency) the code uses Annotated instead.
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on literal byte counts and use upper-case fixture names on purpose.
+"tests/*" = ["PLR2004", "N806"]
+
+[tool.ruff.format]
+quote-style = "double"

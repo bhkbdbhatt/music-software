@@ -1,0 +1,249 @@
+# SampleForge — local development stack.
+#
+#   docker compose up --build          (or: make dev)
+#
+# Brings up Postgres, Redis, MinIO, runs migrations, then starts the API and the
+# worker. First build is slow: the image carries the CUDA build of torch, which
+# is several GB. Subsequent builds reuse the dependency layer.
+#
+# Ports: API :8000, Postgres :5432, Redis :6379, MinIO :9000 (console :9001).
+
+name: sampleforge
+
+# ---------------------------------------------------------------------------
+# Shared configuration
+# ---------------------------------------------------------------------------
+x-app-env: &app-env
+  # .env holds API keys and any local overrides. Copy it first:
+  #   cp .env.example .env
+  # The values below are the container-specific ones and deliberately override
+  # .env: inside the network a service is reachable by its compose name, never
+  # by "localhost", which would mean the container itself.
+  SAMPLEFORGE_DATABASE_URL: postgresql+asyncpg://sampleforge:sampleforge@postgres:5432/sampleforge
+  SAMPLEFORGE_REDIS_URL: redis://redis:6379/0
+  # Local storage backend by default: it needs no bucket and writes inside the
+  # container. Switch to s3 (settings shown, uncomment with the init service
+  # below) to exercise the MinIO path.
+  SAMPLEFORGE_STORAGE_BACKEND: local
+  SAMPLEFORGE_LOCAL_STORAGE_DIR: /app/var/samples
+  # SAMPLEFORGE_STORAGE_BACKEND: s3
+  # SAMPLEFORGE_S3_BUCKET: sampleforge
+  # SAMPLEFORGE_S3_ENDPOINT_URL: http://minio:9000
+  # SAMPLEFORGE_S3_REGION: us-east-1
+  # AWS_ACCESS_KEY_ID: sampleforge
+  # AWS_SECRET_ACCESS_KEY: sampleforge-secret
+  # CPU by default. Change to cuda together with the GPU block on the worker
+  # below — a device of cuda with no visible GPU fails every job at model load.
+  SAMPLEFORGE_DEVICE: cpu
+  SAMPLEFORGE_ENVIRONMENT: development
+
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+
+services:
+  # -------------------------------------------------------------------------
+  # Postgres — job, batch, and recipe rows.
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sampleforge
+      POSTGRES_PASSWORD: sampleforge
+      POSTGRES_DB: sampleforge
+      # Postgres itself refuses to initialise into a non-empty mount point when
+      # this is off, which silently ignores a volume left over from an old image.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      # Published so `make migrate` on the host can reach the same database the
+      # containers use.
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # depends_on below waits for this, which is what stops Alembic from
+      # connecting before Postgres is accepting connections.
+      test: ["CMD-SHELL", "pg_isready -U sampleforge -d sampleforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # -------------------------------------------------------------------------
+  # Redis — arq broker. Job payloads live here until a worker picks them up, so
+  # persistence is on: without AOF, a restart silently drops queued jobs while
+  # their rows stay "queued" in Postgres forever.
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # -------------------------------------------------------------------------
+  # MinIO — S3-compatible storage for development. Not used while
+  # SAMPLEFORGE_STORAGE_BACKEND=local.
+  # -------------------------------------------------------------------------
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    # minio-init:
+    # image: cgr.dev/chainguard/minio-client:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: sampleforge
+      MINIO_ROOT_PASSWORD: sampleforge-secret
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # web console, http://localhost:9001
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      # `mc` ships in the minio image; `curl` no longer does.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: creates the bucket the worker uploads to. Runs to completion and
+  # exits; api/worker wait on that with service_completed_successfully.
+  minio-init:
+    image: cgr.dev/chainguard/minio-client:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 sampleforge sampleforge-secret &&
+      mc mb --ignore-existing local/sampleforge &&
+      mc anonymous set download local/sampleforge
+      "
+    restart: "no"
+
+  # -------------------------------------------------------------------------
+  # Migrations — same image, runs to completion before anything else starts.
+  # A one-shot service rather than `command: alembic upgrade head && uvicorn ...`
+  # so that N api replicas do not race each other to migrate.
+  # -------------------------------------------------------------------------
+  migrate:
+    build: *app-build
+    env_file:
+      - .env
+    environment: *app-env
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  # -------------------------------------------------------------------------
+  # API — submission, polling, recipes. No model weights, so no GPU needed.
+  # -------------------------------------------------------------------------
+  api:
+    build: *app-build
+    restart: unless-stopped
+    # PID 1 reaps zombies and forwards signals, so uvicorn's graceful shutdown
+    # actually reaches the workers instead of waiting out the 10s kill timeout.
+    init: true
+    env_file:
+      - .env
+    environment: *app-env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Rendered samples live in a named volume so `docker compose restart`
+      # keeps them and the API can serve what the worker wrote.
+      - sample_data:/app/var/samples
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # Inherited from the image; restated so the api service is marked healthy
+      # for anything that wants to wait on it.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/v1/health', timeout=3).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # Worker — drains the arq queue, runs inference, enforces constraints, uploads.
+  # -------------------------------------------------------------------------
+  worker:
+    build: *app-build
+    restart: unless-stopped
+    init: true
+    # NOTE: the module is app.workers.queue, not app.workers.tasks. WorkerSettings
+    # lives in queue.py; tasks.py holds the job coroutine itself.
+    command: ["arq", "app.workers.queue.WorkerSettings"]
+    env_file:
+      - .env
+    environment: *app-env
+    volumes:
+      - sample_data:/app/var/samples
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # arq drains in-flight jobs on SIGTERM; give it room to finish one render
+    # instead of killing it mid-write and leaving a half-uploaded file.
+    stop_grace_period: 120s
+
+    # -----------------------------------------------------------------------
+    # GPU support — commented out on purpose.
+    #
+    # Compose (v2.3+) honours deploy.resources.reservations.devices without
+    # swarm mode, but only on a host that can actually provide the device. Left
+    # active, this block makes `make dev` fail on every laptop and CI runner with
+    # "could not select device driver nvidia", so it ships disabled.
+    #
+    # To enable GPU inference:
+    #   1. Host requirements (Linux only):
+    #        - an NVIDIA driver, `nvidia-smi` works
+    #        - the NVIDIA Container Toolkit
+    #          (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/)
+    #        - for Docker Desktop on Windows/macOS with an NVIDIA GPU: enable
+    #          Settings → Resources → WSL integration GPU support
+    #   2. Uncomment the block below.
+    #   3. Set SAMPLEFORGE_DEVICE: cuda in x-app-env above.
+    #   4. docker compose up --build worker   (rebuild not required, restart is)
+    #
+    # Verify with: docker compose exec worker python -c \
+    #   "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+    #
+    # Check /v1/health too: it reports gpu_available, and status becomes
+    # "degraded" when device is cuda but no GPU is visible.
+    #
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    # -----------------------------------------------------------------------
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  # Shared between api and worker so rendered audio written by the worker is
+  # readable by the API. Switch to the s3 backend and this volume goes away.
+  sample_data:
