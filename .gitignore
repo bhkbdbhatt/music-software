@@ -8,3 +8,5 @@ sampleforge/.pytest_cache/
 sampleforge/.ruff_cache
 app/__pycache__/
 tests/__pycache__/
+sd.md
+session-ses_ee60.md
